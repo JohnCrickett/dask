@@ -9,6 +9,7 @@ from dask.utils import tmpdir, tmpfile
 import dask.dataframe as dd
 from dask.dataframe.io.parquet import read_parquet, to_parquet
 from dask.dataframe.utils import assert_eq
+
 fastparquet = pytest.importorskip('fastparquet')
 
 
@@ -244,6 +245,21 @@ def test_ordering():
         assert_eq(ddf, ddf2)
 
 
+def test_read_parquet_custom_columns():
+    with tmpdir() as tmp:
+        tmp = str(tmp)
+        data = pd.DataFrame({'i32': np.arange(1000, dtype=np.int32),
+                             'f': np.arange(1000, dtype=np.float64)})
+        df = dd.from_pandas(data, chunksize=50)
+        df.to_parquet(tmp)
+
+        df2 = read_parquet(tmp, columns=['i32', 'f'])
+        assert_eq(df2, df2, check_index=False)
+
+        df3 = read_parquet(tmp, columns=['f', 'i32'])
+        assert_eq(df3, df3, check_index=False)
+
+
 @pytest.mark.parametrize('df,write_kwargs,read_kwargs', [
     (pd.DataFrame({'x': [3, 2, 1]}), {}, {}),
     (pd.DataFrame({'x': ['c', 'a', 'b']}), {'object_encoding': 'utf8'}, {}),
@@ -304,3 +320,20 @@ def test_categories(fn):
     with pytest.raises(ValueError):
         # attempt to load as category unknown column
         ddf2 = dd.read_parquet(fn, categories=['foo'])
+
+
+def test_empty_partition(fn):
+    df = pd.DataFrame({"a": range(10), "b": range(10)})
+    ddf = dd.from_pandas(df, npartitions=5)
+
+    # fails as there are empty partitions
+    ddf2 = ddf[ddf.a <= 5]
+    ddf2.to_parquet(fn)
+
+    ddf3 = dd.read_parquet(fn)
+    assert_eq(ddf2.compute(), ddf3.compute(), check_names=False,
+              check_index=False)
+
+    ddf2 = ddf[ddf.a <= -5]
+    with pytest.raises(ValueError):
+        ddf2.to_parquet(fn)

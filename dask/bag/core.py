@@ -109,7 +109,7 @@ def optimize(dsk, keys, fuse_keys=None, rename_fused_keys=True, **kwargs):
     """ Optimize a dask from a dask.bag """
     dsk2, dependencies = cull(dsk, keys)
     dsk3, dependencies = fuse(dsk2, keys + (fuse_keys or []), dependencies,
-                              rename_fused_keys=rename_fused_keys)
+                              rename_keys=rename_fused_keys)
     dsk4 = inline_singleton_lists(dsk3, dependencies)
     dsk5 = lazify(dsk4)
     return dsk5
@@ -329,7 +329,7 @@ class Item(Base):
         Returns a single value.
         """
         from dask.delayed import Delayed
-        return Delayed(self.key, [self.dask])
+        return Delayed(self.key, self.dask)
 
 
 class Bag(Base):
@@ -1113,7 +1113,7 @@ class Bag(Base):
         Returns list of Delayed, one per partition.
         """
         from dask.delayed import Delayed
-        return [Delayed(k, [self.dask]) for k in self._keys()]
+        return [Delayed(k, self.dask) for k in self._keys()]
 
     def repartition(self, npartitions):
         """ Coalesce bag into fewer partitions

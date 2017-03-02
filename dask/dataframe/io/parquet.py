@@ -118,6 +118,7 @@ def read_parquet(path, columns=None, filters=None, categories=None, index=None,
     meta = pd.DataFrame({c: pd.Series([], dtype=d)
                         for (c, d) in dtypes.items()},
                         columns=[c for c in pf.columns if c in dtypes])
+    meta = meta[list(all_columns)]
 
     for cat in categories:
         meta[cat] = pd.Series(pd.Categorical([],
@@ -288,10 +289,13 @@ def to_parquet(path, df, compression=None, write_index=None, has_nulls=None,
     out = delayed(writes).compute()
 
     for fn, rg in zip(filenames, out):
-        for chunk in rg.columns:
-            chunk.file_path = fn
-        fmd.row_groups.append(rg)
+        if rg is not None:
+            for chunk in rg.columns:
+                chunk.file_path = fn
+            fmd.row_groups.append(rg)
 
+    if len(fmd.row_groups) == 0:
+        raise ValueError("All partitions were empty")
     fastparquet.writer.write_common_metadata(metadata_fn, fmd, open_with=myopen,
                                              no_row_groups=False)
 

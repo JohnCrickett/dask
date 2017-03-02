@@ -3,40 +3,33 @@ from operator import add, setitem
 import pickle
 from random import random
 
-from toolz import identity, partial
+from toolz import identity, partial, merge
 import pytest
 
 from dask.compatibility import PY2, PY3
-from dask.delayed import delayed, to_task_dasks, compute, Delayed
+from dask.delayed import delayed, to_task_dask, compute, Delayed
 
 
-def test_to_task_dasks():
+def test_to_task_dask():
     a = delayed(1, name='a')
     b = delayed(2, name='b')
-    task, dasks = to_task_dasks([a, b, 3])
+    task, dask = to_task_dask([a, b, 3])
     assert task == ['a', 'b', 3]
-    assert len(dasks) == 2
-    assert a.dask in dasks
-    assert b.dask in dasks
 
-    task, dasks = to_task_dasks((a, b, 3))
+    task, dask = to_task_dask((a, b, 3))
     assert task == (tuple, ['a', 'b', 3])
-    assert len(dasks) == 2
-    assert a.dask in dasks
-    assert b.dask in dasks
+    assert dict(dask) == merge(a.dask, b.dask)
 
-    task, dasks = to_task_dasks({a: 1, b: 2})
+    task, dask = to_task_dask({a: 1, b: 2})
     assert (task == (dict, [['b', 2], ['a', 1]]) or
             task == (dict, [['a', 1], ['b', 2]]))
-    assert len(dasks) == 2
-    assert a.dask in dasks
-    assert b.dask in dasks
+    assert dict(dask) == merge(a.dask, b.dask)
 
     f = namedtuple('f', ['x', 'y'])
     x = f(1, 2)
-    task, dasks = to_task_dasks(x)
+    task, dask = to_task_dask(x)
     assert task == x
-    assert dasks == []
+    assert dict(dask) == {}
 
 
 def test_delayed():
@@ -273,13 +266,15 @@ def test_array_delayed():
     assert val.sum().compute() == (arr + arr + 1).sum()
     assert val[0, 0].compute() == (arr + arr + 1)[0, 0]
 
-    task, dasks = to_task_dasks(darr)
-    assert len(dasks) == 1
+    task, dsk = to_task_dask(darr)
     orig = set(darr.dask)
-    final = set(dasks[0])
+    final = set(dsk)
     assert orig.issubset(final)
     diff = final.difference(orig)
     assert len(diff) == 1
+
+    delayed_arr = delayed(darr)
+    assert (delayed_arr.compute() == arr).all()
 
 
 def test_array_bag_delayed():

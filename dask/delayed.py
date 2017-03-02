@@ -6,12 +6,13 @@ import operator
 import uuid
 import warnings
 
-from toolz import merge, unique, curry, first
+from toolz import unique, curry, first
 
 from . import base, threaded
 from .compatibility import apply
 from .core import quote
 from .utils import concrete, funcname, methodcaller
+from . import sharedict
 
 __all__ = ['Delayed', 'delayed']
 
@@ -29,12 +30,12 @@ def unzip(ls, nout):
     return out
 
 
-def to_task_dasks(expr):
-    """Normalize a python object and extract all sub-dasks.
+def to_task_dask(expr):
+    """Normalize a python object and merge all sub-graphs.
 
     - Replace ``Delayed`` with their keys
     - Convert literals to things the schedulers can handle
-    - Extract dasks from all enclosed values
+    - Extract dask graphs from all enclosed values
 
     Parameters
     ----------
@@ -45,48 +46,47 @@ def to_task_dasks(expr):
     Returns
     -------
     task : normalized task to be run
-    dasks : list of dasks that form the dag for this task
+    dask : a merged dask graph that forms the dag for this task
 
     Examples
     --------
-
     >>> a = delayed(1, 'a')
     >>> b = delayed(2, 'b')
-    >>> task, dasks = to_task_dasks([a, b, 3])
-    >>> task # doctest: +SKIP
+    >>> task, dask = to_task_dask([a, b, 3])
+    >>> task  # doctest: +SKIP
     ['a', 'b', 3]
-    >>> dasks # doctest: +SKIP
-    [{'a': 1}, {'b': 2}]
+    >>> dict(dask)  # doctest: +SKIP
+    {'a': 1, 'b': 2}
 
-    >>> task, dasks = to_task_dasks({a: 1, b: 2})
-    >>> task # doctest: +SKIP
+    >>> task, dasks = to_task_dask({a: 1, b: 2})
+    >>> task  # doctest: +SKIP
     (dict, [['a', 1], ['b', 2]])
-    >>> dasks # doctest: +SKIP
-    [{'a': 1}, {'b': 2}]
+    >>> dict(dask)  # doctest: +SKIP
+    {'a': 1, 'b': 2}
     """
     if isinstance(expr, Delayed):
-        return expr.key, expr._dasks
+        return expr.key, expr.dask
     if isinstance(expr, base.Base):
         name = 'finalize-' + tokenize(expr, pure=True)
         keys = expr._keys()
-        dsk = expr._optimize(expr.dask, keys)
+        dsk = expr._optimize(dict(expr.dask), keys)
         dsk[name] = (expr._finalize, (concrete, keys))
-        return name, [dsk]
+        return name, dsk
     if isinstance(expr, tuple) and type(expr) != tuple:
-        return expr, []
+        return expr, {}
     if isinstance(expr, (Iterator, list, tuple, set)):
-        args, dasks = unzip((to_task_dasks(e) for e in expr), 2)
+        args, dasks = unzip((to_task_dask(e) for e in expr), 2)
         args = list(args)
-        dasks = flat_unique(dasks)
+        dsk = sharedict.merge(*dasks)
         # Ensure output type matches input type
         if isinstance(expr, (tuple, set)):
-            return (type(expr), args), dasks
+            return (type(expr), args), dsk
         else:
-            return args, dasks
+            return args, dsk
     if isinstance(expr, dict):
-        args, dasks = to_task_dasks([[k, v] for k, v in expr.items()])
-        return (dict, args), dasks
-    return expr, []
+        args, dsk = to_task_dask([[k, v] for k, v in expr.items()])
+        return (dict, args), dsk
+    return expr, {}
 
 
 def tokenize(*args, **kwargs):
@@ -255,10 +255,10 @@ def delayed(obj, name=None, pure=False, nout=None, traverse=True):
         return obj
 
     if isinstance(obj, base.Base) or traverse:
-        task, dasks = to_task_dasks(obj)
+        task, dsk = to_task_dask(obj)
     else:
         task = quote(obj)
-        dasks = []
+        dsk = {}
 
     if task is obj:
         if not (nout is None or (type(nout) is int and nout >= 0)):
@@ -275,11 +275,8 @@ def delayed(obj, name=None, pure=False, nout=None, traverse=True):
     else:
         if not name:
             name = '%s-%s' % (type(obj).__name__, tokenize(task, pure=pure))
-        dasks.append({name: task})
-        return Delayed(name, dasks)
-
-
-do = delayed
+        dsk = sharedict.merge(dsk, (name, {name: task}))
+        return Delayed(name, dsk)
 
 
 def do(*args, **kwargs):
@@ -308,14 +305,16 @@ class Delayed(base.Base):
 
     Equivalent to the output from a single key in a dask graph.
     """
-    __slots__ = ('_key', '_dasks', '_length')
+    __slots__ = ('_key', 'dask', '_length')
     _finalize = staticmethod(first)
     _default_get = staticmethod(threaded.get)
     _optimize = staticmethod(lambda d, k, **kwds: d)
 
-    def __init__(self, key, dasks, length=None):
+    def __init__(self, key, dsk, length=None):
         self._key = key
-        self._dasks = dasks
+        if type(dsk) is list:  # compatibility with older versions
+            dsk = sharedict.merge(*dsk)
+        self.dask = dsk
         self._length = length
 
     def __getstate__(self):
@@ -324,10 +323,6 @@ class Delayed(base.Base):
     def __setstate__(self, state):
         for k, v in zip(self.__slots__, state):
             setattr(self, k, v)
-
-    @property
-    def dask(self):
-        return merge(*self._dasks)
 
     @property
     def key(self):
@@ -403,18 +398,18 @@ def call_function(func, func_token, args, kwargs, pure=False, nout=None):
     else:
         name = dask_key_name
 
-    args, dasks = unzip(map(to_task_dasks, args), 2)
+    args, dasks = unzip(map(to_task_dask, args), 2)
+    dsk = sharedict.merge(*dasks)
     if kwargs:
-        dask_kwargs, dasks2 = to_task_dasks(kwargs)
-        dasks = dasks + (dasks2,)
+        dask_kwargs, dsk2 = to_task_dask(kwargs)
+        dsk.update(dsk2)
         task = (apply, func, list(args), dask_kwargs)
     else:
         task = (func,) + args
 
-    dasks = flat_unique(dasks)
-    dasks.append({name: task})
+    dsk.update_with_key({name: task}, key=name)
     nout = nout if nout is not None else None
-    return Delayed(name, dasks, length=nout)
+    return Delayed(name, dsk, length=nout)
 
 
 class DelayedLeaf(Delayed):
@@ -430,10 +425,6 @@ class DelayedLeaf(Delayed):
     def dask(self):
         return {self._key: self._obj}
 
-    @property
-    def _dasks(self):
-        return [self.dask]
-
     def __call__(self, *args, **kwargs):
         return call_function(self._obj, self._key, args, kwargs,
                              pure=self._pure, nout=self._nout)
@@ -448,8 +439,9 @@ class DelayedAttr(Delayed):
         self._key = key
 
     @property
-    def _dasks(self):
-        return [{self._key: (getattr, self._obj._key, self._attr)}] + self._obj._dasks
+    def dask(self):
+        dsk = {self._key: (getattr, self._obj._key, self._attr)}
+        return sharedict.merge(self._obj.dask, (self._key, dsk))
 
     def __call__(self, *args, **kwargs):
         return call_function(methodcaller(self._attr), self._attr, (self._obj,) + args, kwargs)

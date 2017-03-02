@@ -6,7 +6,7 @@ from math import factorial, log, ceil
 import operator
 
 import numpy as np
-from toolz import compose, partition_all, merge, get, accumulate, pluck
+from toolz import compose, partition_all, get, accumulate, pluck
 
 from . import chunk
 from .core import _concatenate2, Array, atop, lol_tuples
@@ -16,6 +16,7 @@ from ..compatibility import getargspec, builtins
 from ..base import tokenize
 from ..context import _globals
 from ..utils import ignoring, funcname
+from .. import sharedict
 
 
 def reduction(x, chunk, aggregate, axis=None, keepdims=None, dtype=None,
@@ -115,7 +116,7 @@ def partial_reduce(func, x, split_every, keepdims=False, dtype=None, name=None):
         dummy = dict(i for i in enumerate(p) if i[0] not in decided)
         g = lol_tuples((x.name,), range(x.ndim), decided, dummy)
         dsk[(name,) + k] = (func, g)
-    return Array(merge(dsk, x.dask), name, out_chunks, dtype=dtype)
+    return Array(sharedict.merge(x.dask, (name, dsk)), name, out_chunks, dtype=dtype)
 
 
 @wraps(chunk.sum)
@@ -264,7 +265,7 @@ with ignoring(AttributeError):
 
 def moment_chunk(A, order=2, sum=chunk.sum, numel=numel, dtype='f8', **kwargs):
     total = sum(A, dtype=dtype, **kwargs)
-    n = numel(A, **kwargs)
+    n = numel(A, **kwargs).astype(np.int64, copy=False)
     u = total / n
     M = np.empty(shape=n.shape + (order - 1,), dtype=dtype)
     for i in range(2, order + 1):
@@ -519,8 +520,9 @@ def arg_reduction(x, chunk, combine, agg, axis=None, split_every=None):
     dsk = dict(((name,) + k, (chunk, (old,) + k, axis, off)) for (k, off)
                in zip(keys, offset_info))
     # The dtype of `tmp` doesn't actually matter, just need to provide something
-    tmp = Array(merge(dsk, x.dask), name, chunks, dtype=x.dtype)
-    return _tree_reduce(tmp, agg, axis, False, np.int64, split_every, combine)
+    tmp = Array(sharedict.merge(x.dask, (name, dsk)), name, chunks, dtype=x.dtype)
+    dtype = np.argmin([1]).dtype
+    return _tree_reduce(tmp, agg, axis, False, dtype, split_every, combine)
 
 
 def make_arg_reduction(func, argfunc, is_nan_func=False):
@@ -622,7 +624,7 @@ def cumreduction(func, binop, ident, x, axis, dtype=None):
                                       (operator.getitem, (m.name,) + old, slc))
             dsk[(name,) + ind] = (binop, this_slice, (m.name,) + ind)
 
-    return Array(merge(dsk, m.dask), name, x.chunks, m.dtype)
+    return Array(sharedict.merge(m.dask, (name, dsk)), name, x.chunks, m.dtype)
 
 
 @wraps(np.cumsum)

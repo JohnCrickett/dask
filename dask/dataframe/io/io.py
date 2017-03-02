@@ -462,7 +462,7 @@ def to_castra(df, fn=None, categories=None, sorted_index_column=None,
     if compute:
         return DataFrame._get(dsk, keys, get=get)[0]
     else:
-        return delayed([Delayed(key, [dsk]) for key in keys])[0]
+        return delayed([Delayed(key, dsk) for key in keys])[0]
 
 
 def _df_to_bag(df, index=False):
@@ -537,7 +537,7 @@ def from_delayed(dfs, meta=None, divisions=None, prefix='from-delayed',
     $META
     divisions : tuple, str, optional
         Partition boundaries along the index.
-        For tuple, see http://dask.pydata.io/en/latest/dataframe-partitions.html
+        For tuple, see http://dask.pydata.org/en/latest/dataframe-design.html#partitions
         For string 'sorted' will compute the delayed values to find index
         values.  Assumes that the indexes are mutually sorted.
         If None, then won't use index information
